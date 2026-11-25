@@ -1,14 +1,49 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Token Radar: pre-token protocols ranked by implied value</title>
+<title>Token Radar — pre-token protocols ranked by implied value</title>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<a class="skip" href="#board">Skip to the board</a>
-<main id="board" tabindex="-1" aria-busy="true"></main>
+<header class="top">
+  <div class="brand"><span class="dot" aria-hidden="true"></span><span class="brand-name">Token Radar</span><span class="brand-sub">pre-token protocol index</span></div>
+  <div class="top-meta" id="topMeta"></div>
+</header>
+<main>
+  <section class="hero">
+    <h1><span id="heroCount">226</span> pre-token protocols, ranked by implied value</h1>
+    <p class="lede">The watchlist is the floor: every protocol with at least $50M of TVL and no token on record. The early radar adds 186 pre-token protocols below that floor. Implied value is a model, not a promise.</p>
+  </section>
+  <section class="stats" id="stats"></section>
+  <section class="panel" id="distPanel">
+    <h2>Where the value sits</h2>
+    <p class="hint">Share of total implied value by rank decile, log scale. The top of the board holds most of it.</p>
+    <div id="deciles"></div>
+  </section>
+  <section class="controls">
+    <label>Search <input id="q" type="search" placeholder="Search name, category or chain" autocomplete="off"></label>
+    <label>Category <select id="cat"></select></label>
+    <div class="seg" id="statusSeg">
+      <button type="button" data-status="pre" class="on">Pre-token</button>
+      <button type="button" data-status="live">Live token</button>
+    </div>
+    <span class="shown" id="shown"></span>
+  </section>
+  <section class="panel tablewrap">
+    <table id="board">
+      <thead><tr id="headRow"></tr></thead>
+      <tbody id="body"></tbody>
+    </table>
+    <p class="hint" id="tableHint">Pre-token protocols, strongest implied value first. Select a row for its model and farm plan.</p>
+  </section>
+</main>
+<aside id="detail" class="detail" hidden>
+  <button type="button" id="closeDetail" class="close">Close</button>
+  <div id="detailBody"></div>
+</aside>
+<footer><p>Snapshot <span id="asOf"></span> · radar-2 model · implied values are estimates, not prices.</p></footer>
 <script src="../data.js"></script>
 <script src="app.js"></script>
 </body>
