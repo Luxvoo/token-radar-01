@@ -1,50 +1,116 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Token Radar — pre-token protocols ranked by implied value</title>
-<link rel="stylesheet" href="app.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Token Radar — pre-token protocol index</title>
+  <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<header class="top">
-  <div class="brand"><span class="dot" aria-hidden="true"></span><span class="brand-name">Token Radar</span><span class="brand-sub">pre-token protocol index</span></div>
-  <div class="top-meta" id="topMeta"></div>
-</header>
-<main>
-  <section class="hero">
-    <h1><span id="heroCount">226</span> pre-token protocols, ranked by implied value</h1>
-    <p class="lede">The watchlist is the floor: every protocol with at least $50M of TVL and no token on record. The early radar adds 186 pre-token protocols below that floor. Implied value is a model, not a promise.</p>
-  </section>
-  <section class="stats" id="stats"></section>
-  <section class="panel" id="distPanel">
-    <h2>Where the value sits</h2>
-    <p class="hint">Share of total implied value by rank decile, log scale. The top of the board holds most of it.</p>
-    <div id="deciles"></div>
-  </section>
-  <section class="controls">
-    <label>Search <input id="q" type="search" placeholder="Search name, category or chain" autocomplete="off"></label>
-    <label>Category <select id="cat"></select></label>
-    <div class="seg" id="statusSeg">
-      <button type="button" data-status="pre" class="on">Pre-token</button>
-      <button type="button" data-status="live">Live token</button>
-    </div>
-    <span class="shown" id="shown"></span>
-  </section>
-  <section class="panel tablewrap">
-    <table id="board">
-      <thead><tr id="headRow"></tr></thead>
-      <tbody id="body"></tbody>
-    </table>
-    <p class="hint" id="tableHint">Pre-token protocols, strongest implied value first. Select a row for its model and farm plan.</p>
-  </section>
-</main>
-<aside id="detail" class="detail" hidden>
-  <button type="button" id="closeDetail" class="close">Close</button>
-  <div id="detailBody"></div>
-</aside>
-<footer><p>Snapshot <span id="asOf"></span> · radar-2 model · implied values are estimates, not prices.</p></footer>
-<script src="../data.js"></script>
-<script src="app.js"></script>
+  <header class="topbar">
+    <div class="brand"><span class="pulse" aria-hidden="true"></span><strong>Token Radar</strong><span>pre-token protocol index</span></div>
+    <div id="snapshot-line" class="snapshot-line"></div>
+  </header>
+
+  <main class="shell">
+    <section class="hero" aria-labelledby="page-title">
+      <div>
+        <h1 id="page-title"><span id="hero-count">226</span> pre-token protocols, ranked by implied value</h1>
+        <p>The watchlist is the floor: every protocol with at least $50M of TVL and no token on record. The early radar adds 186 pre-token protocols below that floor. Implied value is a model, not a promise.</p>
+      </div>
+      <div class="hero-note">Calibrated radar-2<br><span>TVL · 7-day growth · age · breadth</span></div>
+    </section>
+
+    <section id="stats" class="stats" aria-label="Radar summary"></section>
+
+    <section class="panel distribution" aria-labelledby="distribution-title">
+      <div class="panel-head">
+        <div>
+          <h2 id="distribution-title">Where the value sits</h2>
+          <p>Share of total implied value by rank decile, log scale. The top of the board holds most of it.</p>
+        </div>
+        <div id="distribution-total" class="panel-kpi"></div>
+      </div>
+      <div id="deciles" class="deciles"></div>
+    </section>
+
+    <section class="controls" aria-label="Board controls">
+      <label class="field">Search
+        <input id="search" type="search" placeholder="Search name, category or chain" autocomplete="off">
+      </label>
+      <label class="field">Category
+        <select id="category"><option value="">All categories</option></select>
+      </label>
+      <div class="field token-field">
+        <span>Token status</span>
+        <div class="toggle" role="group" aria-label="Token status">
+          <button id="status-pre" class="toggle-button active" type="button">Pre-token</button>
+          <button id="status-live" class="toggle-button" type="button">Live token</button>
+        </div>
+      </div>
+      <div id="row-count" class="row-count" aria-live="polite"></div>
+    </section>
+
+    <section id="board" class="panel board" aria-labelledby="board-title">
+      <div class="board-caption">
+        <h2 id="board-title">Pre-token board</h2>
+        <p id="board-subtitle">Strongest implied value first. Select a row for its model and farm plan.</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th data-sort="rank"><button type="button">Rank <span class="sort-mark" aria-hidden="true"></span></button></th>
+              <th data-sort="name"><button type="button">Protocol <span class="sort-mark" aria-hidden="true"></span></button></th>
+              <th data-sort="tvl"><button type="button">TVL <span class="sort-mark" aria-hidden="true"></span></button></th>
+              <th data-sort="change"><button type="button">7D <span class="sort-mark" aria-hidden="true"></span></button></th>
+              <th data-sort="age"><button type="button">Age <span class="sort-mark" aria-hidden="true"></span></button></th>
+              <th data-sort="value"><button id="value-heading" type="button">Implied value <span class="sort-mark" aria-hidden="true"></span></button></th>
+              <th data-sort="token"><button type="button">Token <span class="sort-mark" aria-hidden="true"></span></button></th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <p id="empty" class="empty" hidden>No protocols match those filters.</p>
+    </section>
+
+    <section id="model-check" class="panel model-check" aria-labelledby="model-title">
+      <div class="panel-head">
+        <div>
+          <h2 id="model-title">Model check</h2>
+          <p>Leave-one-out backtest on live-token peers: each peer is priced with medians computed without itself.</p>
+        </div>
+        <div id="model-kpis" class="model-kpis"></div>
+      </div>
+      <div class="model-grid">
+        <div>
+          <h3>How the estimate is built</h3>
+          <div id="model-formula" class="formula"></div>
+          <div id="backtest-notes" class="notes"></div>
+        </div>
+        <div>
+          <h3>Peer multiples by category</h3>
+          <div class="peer-wrap">
+            <table class="peer-table">
+              <thead><tr><th>Category</th><th>Live peers</th><th>Raw median</th><th>Multiple used</th><th>Board rows</th></tr></thead>
+              <tbody id="peer-rows"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="footer">Implied value is an estimate from the snapshot, not a price and not a promise that a token will launch.</footer>
+  </main>
+
+  <div id="scrim" class="scrim" hidden></div>
+  <aside id="detail" class="detail" hidden aria-label="Protocol detail">
+    <button id="detail-close" class="close" type="button">Close</button>
+    <div id="detail-content"></div>
+  </aside>
+
+  <script src="../data.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
