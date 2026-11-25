@@ -1,4 +1,4 @@
-export interface ProtocolInput {
+export interface Protocol {
   slug: string;
   name: string;
   category: string | null;
@@ -11,596 +11,330 @@ export interface ProtocolInput {
   symbol: string | null;
 }
 
-export interface SnapshotInput {
+export interface Snapshot {
   as_of: string;
-  source?: string;
   floor_usd: number;
-  protocols: ProtocolInput[];
+  protocols: Protocol[];
   watchlist: string[];
 }
 
-export interface BoardRow {
-  slug: string;
-  name: string;
-  category: string | null;
-  chains: string[];
-  rank: number;
-  implied_value_usd: number;
-  farm_steps: string[];
-  watchlist: boolean;
-  tvl_usd: number;
-  change_7d: number | null;
-  age_days: number;
-  peer_multiple: number;
-  growth_multiplier: number;
-  maturity_multiplier: number;
-  breadth_multiplier: number;
-}
-
-export interface LiveRow {
-  slug: string;
-  name: string;
-  category: string | null;
-  chains: string[];
-  rank: number;
-  tvl_usd: number;
-  change_7d: number | null;
-  age_days: number;
-  market_cap_usd: number;
-  model_estimate_usd: number;
-  model_ratio: number;
-  peer_multiple: number;
-  growth_multiplier: number;
-  maturity_multiplier: number;
-  breadth_multiplier: number;
-}
-
-export interface CategoryStat {
-  category: string;
-  live_peers: number;
-  raw_median: number | null;
-  multiple: number;
-  board_rows: number;
-}
-
-export interface CategoryBias {
-  category: string;
-  peers: number;
-  median_ratio: number;
-}
-
-export interface BacktestSummary {
-  peer_count: number;
-  median_ratio: number;
-  median_abs_log_error: number;
-  baseline_median_ratio: number;
-  baseline_median_abs_log_error: number;
-  category_bias: CategoryBias[];
-}
-
-export interface RadarData {
-  meta: {
-    as_of: string;
-    source: string;
-    floor_usd: number;
-    protocol_count: number;
-    watchlist_count: number;
-    board_count: number;
-    early_count: number;
-    live_count: number;
-    peer_count: number;
-  };
-  model: {
-    shrinkage_k: number;
-    growth_weight: number;
-    maturity_floor: number;
-    maturity_cap_days: number;
-    multiple_min: number;
-    multiple_max: number;
-    peer_tvl_cap_usd: number;
-    breadth_per_chain: number;
-    breadth_cap: number;
-    global_median: number;
-  };
-  rows: BoardRow[];
-  live_rows: LiveRow[];
-  category_stats: CategoryStat[];
-  backtest: BacktestSummary;
-}
-
-interface ModelConstants {
-  shrinkageK: number;
-  growthWeight: number;
-  maturityFloor: number;
-}
-
-const MATURITY_CAP_DAYS = 1095;
-const MULTIPLE_MIN = 0.08;
-const MULTIPLE_MAX = 0.8;
-const PEER_TVL_CAP_USD = 2_000_000_000;
-const BREADTH_PER_CHAIN = 0.02;
-const BREADTH_CAP = 5;
-const EARLY_ROW_TARGET = 186;
-const LIVE_ROW_TARGET = 24;
-
-const TUNED: ModelConstants = {
-  shrinkageK: 6,
-  growthWeight: 0.6,
-  maturityFloor: 0.6,
-};
-
-const BASELINE: ModelConstants = {
-  shrinkageK: 6,
-  growthWeight: 0.4,
-  maturityFloor: 0.7,
-};
-
 interface PeerStats {
-  peers: ProtocolInput[];
-  globalMedian: number;
-  byCategory: Map<string, { ratios: number[]; rawMedian: number; multiple: number }>;
+  category: string;
+  peer_n: number;
+  median_ratio: number;
+  q25_ratio: number;
+  q75_ratio: number;
+  multiple: number;
+  low_multiple: number;
+  high_multiple: number;
+  confidence: string;
 }
 
-interface ScoreParts {
-  peerMultiple: number;
-  growthMultiplier: number;
-  maturityMultiplier: number;
-  breadthMultiplier: number;
-  implied: number;
-  ageDays: number;
-}
+const PEER_TVL_CAP = 2_000_000_000;
+const SHRINKAGE_K = 6;
+const RATIO_CAP = 1.0;
+const GROWTH_WEIGHT = 0.6;
+const MATURITY_FLOOR = 0.6;
+const MATURITY_DAYS = 1095;
+const UNKNOWN_AGE_DAYS = 365;
 
-function clamp(value: number, low: number, high: number): number {
-  return Math.min(high, Math.max(low, value));
-}
+const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
 
 function median(values: number[]): number {
   if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+  const s = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 === 1 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
 }
 
-function parseDay(value: string | null | undefined): number | null {
-  if (!value) return null;
-  const text = value.includes('T') ? value : `${value}T00:00:00Z`;
-  const time = Date.parse(text);
-  return Number.isFinite(time) ? time : null;
+function percentile(values: number[], q: number): number {
+  if (values.length === 0) return 0;
+  const s = [...values].sort((a, b) => a - b);
+  const at = (s.length - 1) * q;
+  const lo = Math.floor(at);
+  const hi = Math.ceil(at);
+  return lo === hi ? s[lo]! : s[lo]! * (hi - at) + s[hi]! * (at - lo);
 }
 
-function ageDays(protocol: ProtocolInput, asOf: number): number {
-  const listed = parseDay(protocol.listed_at);
-  if (listed === null) return 365;
-  return Math.max(0, Math.floor((asOf - listed) / 86_400_000));
+function categoryOf(p: Protocol): string {
+  return p.category && p.category.trim() !== '' ? p.category : 'Uncategorized';
 }
 
-function categoryKey(protocol: ProtocolInput): string {
-  return protocol.category ?? 'Uncategorised';
+function ageDays(p: Protocol, asOf: string): number {
+  if (!p.listed_at) return UNKNOWN_AGE_DAYS;
+  const start = Date.parse(`${p.listed_at}T00:00:00Z`);
+  const end = Date.parse(`${asOf}T00:00:00Z`);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return UNKNOWN_AGE_DAYS;
+  return Math.max(0, Math.floor((end - start) / 86_400_000));
 }
 
-function hasLiveToken(protocol: ProtocolInput): boolean {
-  return typeof protocol.mcap_usd === 'number' && protocol.mcap_usd > 0;
+function confidenceFor(peerN: number): string {
+  if (peerN >= 8) return 'strong';
+  if (peerN >= 4) return 'moderate';
+  if (peerN >= 1) return 'thin';
+  return 'global-only';
 }
 
-function isPeer(protocol: ProtocolInput): boolean {
-  return hasLiveToken(protocol) && protocol.tvl_usd > 0 && protocol.tvl_usd <= PEER_TVL_CAP_USD;
+function peerRatio(p: Protocol, winsorize: boolean): number {
+  const ratio = (p.mcap_usd ?? 0) / p.tvl_usd;
+  return winsorize ? Math.min(ratio, RATIO_CAP) : ratio;
 }
 
-function shrunkMultiple(rawMedian: number, peerCount: number, globalMedian: number, constants: ModelConstants): number {
-  const multiple = peerCount === 0
-    ? globalMedian
-    : (peerCount * rawMedian + constants.shrinkageK * globalMedian) / (peerCount + constants.shrinkageK);
-  return clamp(multiple, MULTIPLE_MIN, MULTIPLE_MAX);
+function factors(p: Protocol, asOf: string): { growth: number; maturity: number; breadth: number; age: number } {
+  const age = ageDays(p, asOf);
+  const growth = 1 + (clamp(p.change_7d ?? 0, -50, 80) / 100) * GROWTH_WEIGHT;
+  const maturity = MATURITY_FLOOR + (Math.min(age, MATURITY_DAYS) / MATURITY_DAYS) * (1 - MATURITY_FLOOR);
+  const breadth = 1 + 0.02 * Math.min(Math.max(p.chains.length - 1, 0), 5);
+  return { growth, maturity, breadth, age };
 }
 
-function buildPeerStats(protocols: ProtocolInput[]): PeerStats {
-  const peers = protocols.filter(isPeer);
-  const globalMedian = median(peers.map((p) => p.mcap_usd! / p.tvl_usd));
+function buildPeerStats(protocols: Protocol[]): {
+  peers: Protocol[];
+  globalMedian: number;
+  globalQ25: number;
+  globalQ75: number;
+  byCategory: Map<string, PeerStats>;
+} {
+  const peers = protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd <= PEER_TVL_CAP);
+  const globalRatios = peers.map((p) => peerRatio(p, true));
+  const globalMedian = median(globalRatios);
+  const globalQ25 = percentile(globalRatios, 0.25);
+  const globalQ75 = percentile(globalRatios, 0.75);
   const grouped = new Map<string, number[]>();
-  for (const peer of peers) {
-    const key = categoryKey(peer);
-    const list = grouped.get(key) ?? [];
-    list.push(peer.mcap_usd! / peer.tvl_usd);
-    grouped.set(key, list);
+  for (const p of peers) {
+    const c = categoryOf(p);
+    const arr = grouped.get(c) ?? [];
+    arr.push(peerRatio(p, true));
+    grouped.set(c, arr);
   }
-  const byCategory = new Map<string, { ratios: number[]; rawMedian: number; multiple: number }>();
+  const byCategory = new Map<string, PeerStats>();
   for (const [category, ratios] of grouped) {
-    const rawMedian = median(ratios);
+    const n = ratios.length;
+    const med = median(ratios);
+    const q25 = percentile(ratios, 0.25);
+    const q75 = percentile(ratios, 0.75);
+    const multiple = clamp((n * med + SHRINKAGE_K * globalMedian) / (n + SHRINKAGE_K), 0.08, 0.8);
+    const low = n >= 3 ? clamp((n * q25 + SHRINKAGE_K * globalQ25) / (n + SHRINKAGE_K), 0.08, 0.8) : clamp(globalQ25, 0.08, 0.8);
+    const high = n >= 3 ? clamp((n * q75 + SHRINKAGE_K * globalQ75) / (n + SHRINKAGE_K), 0.08, 0.8) : clamp(globalQ75, 0.08, 0.8);
     byCategory.set(category, {
-      ratios,
-      rawMedian,
-      multiple: shrunkMultiple(rawMedian, ratios.length, globalMedian, TUNED),
+      category,
+      peer_n: n,
+      median_ratio: med,
+      q25_ratio: q25,
+      q75_ratio: q75,
+      multiple,
+      low_multiple: Math.min(low, multiple),
+      high_multiple: Math.max(high, multiple),
+      confidence: confidenceFor(n),
     });
   }
-  return { peers, globalMedian, byCategory };
+  return { peers, globalMedian, globalQ25, globalQ75, byCategory };
 }
 
-function scoreWithMultiple(protocol: ProtocolInput, asOf: number, peerMultiple: number, constants: ModelConstants): ScoreParts {
-  const days = ageDays(protocol, asOf);
-  const growth = clamp(protocol.change_7d ?? 0, -50, 80);
-  const growthMultiplier = 1 + (growth / 100) * constants.growthWeight;
-  const maturityMultiplier = constants.maturityFloor
-    + (Math.min(days, MATURITY_CAP_DAYS) / MATURITY_CAP_DAYS) * (1 - constants.maturityFloor);
-  const chainCount = protocol.chains?.length ?? 0;
-  const breadthMultiplier = 1 + BREADTH_PER_CHAIN * Math.min(Math.max(chainCount - 1, 0), BREADTH_CAP);
-  const implied = Math.round(protocol.tvl_usd * peerMultiple * growthMultiplier * maturityMultiplier * breadthMultiplier);
-  return { peerMultiple, growthMultiplier, maturityMultiplier, breadthMultiplier, implied, ageDays: days };
+function statsFor(category: string, built: ReturnType<typeof buildPeerStats>): PeerStats {
+  const found = built.byCategory.get(category);
+  if (found) return found;
+  const multiple = clamp(built.globalMedian, 0.08, 0.8);
+  return {
+    category,
+    peer_n: 0,
+    median_ratio: built.globalMedian,
+    q25_ratio: built.globalQ25,
+    q75_ratio: built.globalQ75,
+    multiple,
+    low_multiple: Math.min(clamp(built.globalQ25, 0.08, 0.8), multiple),
+    high_multiple: Math.max(clamp(built.globalQ75, 0.08, 0.8), multiple),
+    confidence: 'global-only',
+  };
 }
 
-function scoreProtocol(protocol: ProtocolInput, asOf: number, stats: PeerStats): ScoreParts {
-  const category = stats.byCategory.get(categoryKey(protocol));
-  const multiple = category?.multiple ?? clamp(stats.globalMedian, MULTIPLE_MIN, MULTIPLE_MAX);
-  return scoreWithMultiple(protocol, asOf, multiple, TUNED);
-}
-
-function gasCost(chain: string): string {
-  switch (chain) {
-    case 'Solana':
-    case 'Ripple':
-    case 'Stellar':
-      return 'about $0.01 of gas';
-    case 'Base':
-    case 'Arbitrum':
-    case 'Optimism':
-    case 'Linea':
-    case 'Scroll':
-    case 'Mantle':
-    case 'Blast':
-    case 'Unichain':
-    case 'zkSync Era':
-    case 'Hyperliquid L1':
-    case 'Monad':
-    case 'Sui':
-    case 'Aptos':
-    case 'Near':
-    case 'TON':
-    case 'Polygon':
-      return 'about $0.10 of gas';
-    case 'Binance':
-    case 'Avalanche':
-    case 'Fantom':
-    case 'Celo':
-    case 'Flare':
-    case 'Sonic':
-    case 'Sei':
-    case 'Berachain':
-    case 'Plasma':
-    case 'Arc':
-    case 'Robinhood Chain':
-    case 'X Layer':
-    case 'Kava':
-    case 'Cronos':
-      return 'about $0.20 of gas';
-    case 'Tron':
-      return 'about $0.50 of gas';
-    case 'Cardano':
-      return 'about $0.30 of gas';
-    case 'Bitcoin':
-      return 'about $2 of network fees';
-    case 'Ethereum':
-      return 'about $5 of gas';
-    default:
-      return 'about $0.50 of gas';
+function looStats(protocols: Protocol[], asOf: string, winsorize: boolean): { median_abs_log_err: number; median_ratio: number; peers: number } {
+  const peers = protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd <= PEER_TVL_CAP);
+  const ratios: number[] = [];
+  for (const p of peers) {
+    const others = peers.filter((x) => x !== p);
+    const globalMedian = median(others.map((x) => peerRatio(x, winsorize)));
+    const catRatios = others.filter((x) => categoryOf(x) === categoryOf(p)).map((x) => peerRatio(x, winsorize));
+    const multiple = catRatios.length > 0
+      ? clamp((catRatios.length * median(catRatios) + SHRINKAGE_K * globalMedian) / (catRatios.length + SHRINKAGE_K), 0.08, 0.8)
+      : clamp(globalMedian, 0.08, 0.8);
+    const f = factors(p, asOf);
+    const implied = p.tvl_usd * multiple * f.growth * f.maturity * f.breadth;
+    ratios.push(implied / (p.mcap_usd ?? 1));
   }
+  return {
+    median_abs_log_err: median(ratios.map((r) => Math.abs(Math.log(r)))),
+    median_ratio: median(ratios),
+    peers: peers.length,
+  };
 }
 
-function capitalTier(tvlUsd: number): string {
-  if (tvlUsd >= 500_000_000) return '$150';
-  if (tvlUsd >= 100_000_000) return '$100';
-  return '$50';
+function gasForChain(chain: string): string {
+  const gas: Record<string, string> = {
+    Ethereum: '$5.00',
+    Base: '$0.10',
+    Arbitrum: '$0.10',
+    Optimism: '$0.10',
+    Solana: '$0.01',
+    BSC: '$0.05',
+    Tron: '$0.05',
+    Bitcoin: '$2.00',
+    Polygon: '$0.05',
+    Avalanche: '$0.10',
+  };
+  return gas[chain] ?? '$0.25';
 }
 
-function enterAction(protocol: ProtocolInput, capital: string, chain: string): string {
-  const name = protocol.name;
-  switch (protocol.category) {
-    case 'Lending':
-      return `Supply ${capital} to ${name} on ${chain}, borrow a small amount against it, and keep both sides open`;
-    case 'Uncollateralized Lending':
-      return `Lend ${capital} through ${name} on ${chain} and keep the loan open`;
-    case 'Dexs':
-      return `Add ${capital} of liquidity to a ${name} pool on ${chain} in a range you can leave alone`;
-    case 'Risk Curators':
-    case 'Onchain Capital Allocator':
-    case 'Yield Aggregator':
-    case 'Liquidity Manager':
-    case 'Options Vault':
-      return `Deposit ${capital} into a ${name} vault on ${chain} and hold the vault shares`;
-    case 'Yield':
-    case 'Farm':
-      return `Deposit ${capital} into a ${name} strategy on ${chain} and leave it earning`;
-    case 'Leveraged Farming':
-      return `Open a low-leverage ${capital} farming position on ${name} on ${chain} and keep margin aside`;
-    case 'Liquid Staking':
-      return `Stake ${capital} with ${name} on ${chain} and hold the receipt token`;
-    case 'Liquid Restaking':
-    case 'Restaking':
-    case 'Restaked BTC':
-    case 'Staking Pool':
-      return `Stake ${capital} through ${name} on ${chain} and hold the receipt position`;
-    case 'CDP':
-    case 'CDP Manager':
-      return `Lock ${capital} of collateral in ${name} on ${chain}, mint a small amount, and keep the position healthy`;
-    case 'Bridge':
-    case 'Canonical Bridge':
-    case 'Cross Chain Bridge':
-      return `Bridge ${capital} through ${name} on ${chain} and leave it on the destination side`;
-    case 'Derivatives':
-    case 'Options':
-    case 'Interest Rate Derivatives':
-    case 'Synthetics':
-      return `Open a small, hedged ${capital} position on ${name} on ${chain} and keep margin aside`;
-    case 'Basis Trading':
-      return `Open a delta-neutral ${capital} basis position on ${name} on ${chain} and keep it balanced`;
-    case 'RWA':
-      return `Deposit ${capital} into a ${name} real-world-asset pool on ${chain} and hold the position`;
-    case 'Prediction Market':
-      return `Place ${capital} across small ${name} markets on ${chain} and let them settle`;
-    case 'Privacy':
-      return `Move ${capital} through ${name} on ${chain} for your own funds and keep your records`;
-    case 'CEX':
-      return `Deposit ${capital} to ${name}, make a few small spot trades, and leave a balance in place`;
-    case 'Chain':
-      return `Bridge ${capital} to ${name} and use it in one application there`;
-    case 'Launchpad':
-      return `Commit ${capital} to one ${name} launch on ${chain} and keep the allocation`;
-    case 'Payments':
-      return `Send ${capital} in small ${name} payments on ${chain} and keep the account active`;
-    case 'Insurance':
-      return `Put ${capital} into ${name} cover or underwriting on ${chain} and keep it in place`;
-    case 'Indexes':
-      return `Buy ${capital} of a ${name} index position on ${chain} and hold it`;
-    case 'NFT Marketplace':
-      return `List or buy one low-cost item on ${name} on ${chain} within a ${capital} budget`;
-    case 'OTC Marketplace':
-      return `Complete one small ${capital} trade through ${name} on ${chain}`;
-    case 'Token Locker':
-      return `Lock ${capital} through ${name} on ${chain} for a fixed term`;
-    case 'Governance Incentives':
-      return `Take one open governance action on ${name} on ${chain} with a ${capital} position`;
-    case 'AI Agents':
-    case 'Decentralized AI':
-      return `Run one paid ${name} agent task on ${chain} within a ${capital} budget`;
-    case 'Crypto Card Issuer':
-      return `Load ${capital} onto a ${name} card and make small everyday purchases`;
-    case 'Algo-Stables':
-    case 'Dual-Token Stablecoin':
-    case 'Stablecoin Issuer':
-      return `Mint ${capital} of stablecoin through ${name} on ${chain} and hold it`;
-    case 'Stablecoin Wrapper':
-    case 'Anchor BTC':
-    case 'Decentralized BTC':
-      return `Wrap ${capital} through ${name} on ${chain} and hold the wrapped position`;
-    case 'Collateral Management':
-    case 'Collateral Markets':
-      return `Place ${capital} of collateral with ${name} on ${chain} and keep it managed`;
-    case 'Reserve Currency':
-      return `Bond or stake ${capital} with ${name} on ${chain} and hold the position`;
-    default:
-      return `Use the main ${name} product on ${chain} with ${capital} and keep the position open`;
-  }
+function capitalTier(tvl: number): number {
+  if (tvl >= 500_000_000) return 150;
+  if (tvl >= 100_000_000) return 100;
+  return 50;
 }
 
-function repeatAction(protocol: ProtocolInput): string {
-  const name = protocol.name;
-  switch (protocol.category) {
-    case 'Lending':
-    case 'Uncollateralized Lending':
-      return `Supply a little more or repay part of the borrow on ${name}`;
-    case 'Dexs':
-      return `Swap once and check that your ${name} liquidity is still in range`;
-    case 'Bridge':
-    case 'Canonical Bridge':
-    case 'Cross Chain Bridge':
-      return `Bridge a small amount back or across again through ${name}`;
-    case 'Liquid Staking':
-    case 'Liquid Restaking':
-    case 'Restaking':
-    case 'Restaked BTC':
-    case 'Staking Pool':
-      return `Add a small top-up or claim and restake any rewards on ${name}`;
-    case 'CDP':
-    case 'CDP Manager':
-      return `Top up collateral or repay a little of the minted amount on ${name}`;
-    case 'Derivatives':
-    case 'Options':
-    case 'Interest Rate Derivatives':
-    case 'Synthetics':
-    case 'Basis Trading':
-      return `Close and reopen a small hedged position on ${name}`;
-    case 'CEX':
-      return `Make one small spot trade on ${name} and leave the balance in place`;
-    case 'Prediction Market':
-      return `Settle one market and place one new small prediction on ${name}`;
-    case 'Yield':
-    case 'Yield Aggregator':
-    case 'Farm':
-    case 'Leveraged Farming':
-    case 'Risk Curators':
-    case 'Onchain Capital Allocator':
-      return `Harvest and reinvest, or add a small top-up to the ${name} position`;
-    default:
-      return `Make one qualifying move on ${name} — a deposit, a swap, a vote or a claim`;
-  }
+function categoryPlan(category: string, name: string): { core: string; second: string; maintain: string } {
+  const c = category.toLowerCase();
+  if (c.includes('risk curator')) return { core: `deposit into a ${name} vault or curator strategy and keep the vault shares`, second: 'choose a second vault with a different collateral mix', maintain: 'vault deposit or withdrawal' };
+  if (c.includes('capital allocator')) return { core: `allocate to a ${name} strategy vault and keep the position receipt`, second: 'split the allocation across a second strategy', maintain: 'strategy rebalance' };
+  if (c.includes('lending')) return { core: 'supply a major asset and borrow a small stablecoin amount against it', second: 'repay part of the loan and supply again', maintain: 'supply or repay action' };
+  if (c === 'cdp') return { core: 'lock collateral and mint a small stablecoin amount while keeping a healthy collateral ratio', second: 'add collateral or repay to test both sides of the position', maintain: 'collateral top-up or repayment' };
+  if (c.includes('dex')) return { core: 'add liquidity to an active pool and keep the LP position in range', second: 'swap a small amount and add liquidity to a second pool', maintain: 'liquidity adjustment' };
+  if (c.includes('rwa')) return { core: 'buy or hold a small tokenized real-world asset position', second: 'use the asset as collateral only if the app supports it', maintain: 'asset purchase or redemption check' };
+  if (c.includes('bridge')) return { core: 'bridge a small amount across the route and back', second: 'repeat with a different asset or route', maintain: 'bridge transfer' };
+  if (c.includes('staking') || c.includes('restaking')) return { core: 'stake the base asset and hold the receipt token', second: 'use the receipt token in one supported app', maintain: 'stake or unstake check' };
+  if (c.includes('basis')) return { core: 'open a delta-neutral basis position with matched long and short legs', second: 'rebalance the hedge when funding changes', maintain: 'hedge rebalance' };
+  if (c.includes('derivative') || c.includes('option') || c.includes('perpetual')) return { core: 'open a small hedged position with strict size limits', second: 'close and reopen a smaller position to record activity', maintain: 'position adjustment' };
+  if (c.includes('yield') || c.includes('farming')) return { core: 'deposit into a yield strategy and monitor the vault share price', second: 'move part to a second strategy with different risk', maintain: 'deposit or harvest action' };
+  if (c.includes('locker')) return { core: 'lock a small amount for the shortest sensible period', second: 'extend or add a second lock only if the terms are clear', maintain: 'lock review' };
+  if (c === 'chain') return { core: 'bridge a small amount and use a native app on the chain', second: 'stake or provide liquidity inside the ecosystem', maintain: 'native app transaction' };
+  if (c === 'cex') return { core: 'use the spot or earn product with a small balance', second: 'move a small amount on-chain and back', maintain: 'trade or earn check' };
+  return { core: 'use the core product with a small deposit', second: 'repeat the core action from a second feature or chain if available', maintain: 'core product transaction' };
 }
 
-function farmSteps(protocol: ProtocolInput, days: number): string[] {
-  const chain = protocol.chains?.[0] ?? "the protocol's main chain";
-  const gas = gasCost(chain);
-  const capital = capitalTier(protocol.tvl_usd);
-  const holdDays = days < 180 ? 45 : 30;
+function farmSteps(p: Protocol): string[] {
+  const chain = p.chains[0] ?? 'Ethereum';
+  const gas = gasForChain(chain);
+  const capital = capitalTier(p.tvl_usd);
+  const coreAmt = Math.round(capital * 0.6);
+  const secondAmt = Math.round(capital * 0.25);
+  const plan = categoryPlan(categoryOf(p), p.name);
   return [
-    `Start with a fresh wallet that holds only the funds you plan to farm on ${chain}, and store its recovery phrase offline, never in a screenshot or a message. Cost: ${gas} for the first transfer. Time: 5 minutes.`,
-    `${enterAction(protocol, capital, chain)}. Cost: ${capital} of capital and ${gas}. Time: 15 minutes to set up.`,
-    `${repeatAction(protocol)} on ${chain}. Cost: ${gas} a week. Time: 10 minutes a week.`,
-    `Hold the position for at least ${holdDays} days so the activity is counted in more than one snapshot. Cost: the ${capital} stays in the position. Time: ${holdDays} days.`,
-    `After two weeks, add a small top-up or rebalance the ${protocol.name} position once, without changing the plan. Cost: ${gas}. Time: 10 minutes.`,
-    `Review the ${protocol.name} position once a month and withdraw or rotate only if the risk changes; keep a simple record of dates and amounts. Cost: ${gas} to exit. Time: 10 minutes a month.`,
+    `Open ${p.name} from its official app, connect a fresh wallet on ${chain}, and fund it with $${capital} plus about ${gas} for gas. Keep the seed phrase offline and never share it. Cost: ${gas} gas. Time: 10 min.`,
+    `Use about $${coreAmt} for the core action: ${plan.core}. Start small, confirm the transaction, and keep the position receipt or LP token in the same wallet. Cost: ${gas}. Time: 15 min.`,
+    `Repeat a small ${plan.maintain} once a week for four weeks, varying the day and amount slightly. Claim or reinvest any rewards the app already shows, but treat future distributions as uncertain. Cost: ${gas} each time. Time: 5 min weekly.`,
+    `Add the second leg with about $${secondAmt}: ${plan.second}. If ${p.name} supports another chain, bridge only a small test amount first and verify the destination address. Cost: ${gas} plus any bridge fee shown. Time: 20 min.`,
+    `Check TVL, the 7-day change and your position every week. If TVL falls sharply or the app warns about a pause, reduce the position and keep at least 15% of the farm budget liquid. Cost: $0. Time: 10 min weekly.`,
+    `Save transaction hashes, dates, amounts and screenshots in one note. Review monthly, withdraw idle funds, and stop adding if the position no longer fits your risk budget. Cost: $0. Time: 15 min monthly.`,
   ];
 }
 
-function backtest(peers: ProtocolInput[], asOf: number, constants: ModelConstants): { medianRatio: number; medianAbsLogError: number; ratios: { protocol: ProtocolInput; ratio: number }[] } {
-  const allRatios = peers.map((p) => p.mcap_usd! / p.tvl_usd);
-  const ratios: { protocol: ProtocolInput; ratio: number }[] = [];
-  for (const peer of peers) {
-    const others = peers.filter((p) => p.slug !== peer.slug);
-    const globalMedian = median(others.map((p) => p.mcap_usd! / p.tvl_usd));
-    const sameCategory = others.filter((p) => categoryKey(p) === categoryKey(peer));
-    const rawMedian = sameCategory.length > 0
-      ? median(sameCategory.map((p) => p.mcap_usd! / p.tvl_usd))
-      : globalMedian;
-    const multiple = shrunkMultiple(rawMedian, sameCategory.length, globalMedian, constants);
-    const score = scoreWithMultiple(peer, asOf, multiple, constants);
-    ratios.push({ protocol: peer, ratio: score.implied / peer.mcap_usd! });
+function riskFlags(p: Protocol, age: number, peerN: number, low: number, high: number): string[] {
+  const flags: string[] = [];
+  if (p.change_7d !== null && p.change_7d < 0) {
+    flags.push(p.change_7d < -15 ? `Sharp 7d TVL drop ${Math.abs(p.change_7d).toFixed(1)}%` : `7d TVL down ${Math.abs(p.change_7d).toFixed(1)}%`);
   }
-  return {
-    medianRatio: median(ratios.map((r) => r.ratio)),
-    medianAbsLogError: median(ratios.map((r) => Math.abs(Math.log(r.ratio)))),
-    ratios,
-  };
+  if (age < 180) flags.push(`Young protocol: ${age}d tracked`);
+  if (p.chains.length === 1) flags.push('Single-chain exposure');
+  if (peerN < 3) flags.push(`Thin peer evidence (n=${peerN})`);
+  if (low > 0 && high / low > 3) flags.push('Wide sensitivity range');
+  return flags;
 }
 
-function buildBacktestSummary(peers: ProtocolInput[], asOf: number): BacktestSummary {
-  const tuned = backtest(peers, asOf, TUNED);
-  const baseline = backtest(peers, asOf, BASELINE);
-  const grouped = new Map<string, number[]>();
-  for (const item of tuned.ratios) {
-    const key = categoryKey(item.protocol);
-    const list = grouped.get(key) ?? [];
-    list.push(item.ratio);
-    grouped.set(key, list);
-  }
-  const categoryBias = [...grouped.entries()]
-    .filter(([, values]) => values.length >= 3)
-    .map(([category, values]) => ({ category, peers: values.length, median_ratio: median(values) }))
-    .sort((a, b) => Math.abs(Math.log(b.median_ratio)) - Math.abs(Math.log(a.median_ratio)))
-    .slice(0, 6);
-  return {
-    peer_count: peers.length,
-    median_ratio: tuned.medianRatio,
-    median_abs_log_error: tuned.medianAbsLogError,
-    baseline_median_ratio: baseline.medianRatio,
-    baseline_median_abs_log_error: baseline.medianAbsLogError,
-    category_bias: categoryBias,
-  };
-}
-
-export function buildRadar(snapshot: SnapshotInput): RadarData {
-  const asOf = parseDay(snapshot.as_of);
-  if (asOf === null) throw new Error(`snapshot as_of is not a date: ${snapshot.as_of}`);
-  if (!Array.isArray(snapshot.protocols) || !Array.isArray(snapshot.watchlist)) {
-    throw new Error('snapshot must carry protocols and watchlist arrays');
-  }
-  const stats = buildPeerStats(snapshot.protocols);
+export function buildRadar(snapshot: Snapshot): { board: { rows: unknown[] }; data: unknown } {
+  const built = buildPeerStats(snapshot.protocols);
   const bySlug = new Map(snapshot.protocols.map((p) => [p.slug, p]));
-  const watchlistSet = new Set(snapshot.watchlist);
-  const watchlist = snapshot.watchlist.map((slug) => {
-    const protocol = bySlug.get(slug);
-    if (!protocol) throw new Error(`watchlist slug is not in protocols: ${slug}`);
-    return protocol;
-  });
+  const watch = new Set(snapshot.watchlist);
   const early = snapshot.protocols
-    .filter((p) => !watchlistSet.has(p.slug) && !hasLiveToken(p) && p.tvl_usd > 0 && p.tvl_usd < snapshot.floor_usd)
-    .sort((a, b) => b.tvl_usd - a.tvl_usd || (a.slug < b.slug ? -1 : 1))
-    .slice(0, EARLY_ROW_TARGET);
-  if (early.length < EARLY_ROW_TARGET) {
-    throw new Error(`only ${early.length} early pre-token protocols below the floor, need ${EARLY_ROW_TARGET}`);
-  }
+    .filter((p) => !watch.has(p.slug) && (p.mcap_usd === null || p.mcap_usd <= 0) && p.tvl_usd < snapshot.floor_usd)
+    .sort((a, b) => b.tvl_usd - a.tvl_usd || a.slug.localeCompare(b.slug))
+    .slice(0, 186);
+  const selected = [...snapshot.watchlist.map((s) => bySlug.get(s)!), ...early];
+  const rows = selected.map((p) => {
+    const category = categoryOf(p);
+    const stats = statsFor(category, built);
+    const f = factors(p, snapshot.as_of);
+    const factor = f.growth * f.maturity * f.breadth;
+    const implied = Math.round(p.tvl_usd * stats.multiple * factor);
+    const valueLow = Math.round(p.tvl_usd * stats.low_multiple * factor);
+    const valueHigh = Math.round(p.tvl_usd * stats.high_multiple * factor);
+    return {
+      slug: p.slug,
+      name: p.name,
+      rank: 0,
+      category,
+      chains: p.chains,
+      tvl_usd: p.tvl_usd,
+      change_7d: p.change_7d,
+      age_days: f.age,
+      watchlist: watch.has(p.slug),
+      peer_n: stats.peer_n,
+      peer_median: stats.median_ratio,
+      peer_multiple: stats.multiple,
+      low_multiple: stats.low_multiple,
+      high_multiple: stats.high_multiple,
+      growth_mult: f.growth,
+      maturity_mult: f.maturity,
+      breadth_mult: f.breadth,
+      implied_value_usd: implied,
+      value_low: Math.min(valueLow, implied),
+      value_high: Math.max(valueHigh, implied),
+      confidence: stats.confidence,
+      risk_flags: riskFlags(p, f.age, stats.peer_n, valueLow, valueHigh),
+      farm_steps: farmSteps(p),
+    };
+  });
+  rows.sort((a, b) => b.implied_value_usd - a.implied_value_usd || b.tvl_usd - a.tvl_usd || a.slug.localeCompare(b.slug));
+  rows.forEach((r, i) => { r.rank = i + 1; });
 
-  const scored = [...watchlist, ...early]
-    .map((protocol) => ({ protocol, score: scoreProtocol(protocol, asOf, stats) }))
-    .sort((a, b) => b.score.implied - a.score.implied
-      || b.protocol.tvl_usd - a.protocol.tvl_usd
-      || (a.protocol.slug < b.protocol.slug ? -1 : 1));
-
-  const rows: BoardRow[] = scored.map(({ protocol, score }, index) => ({
-    slug: protocol.slug,
-    name: protocol.name,
-    category: protocol.category,
-    chains: protocol.chains ?? [],
-    rank: index + 1,
-    implied_value_usd: score.implied,
-    farm_steps: farmSteps(protocol, score.ageDays),
-    watchlist: watchlistSet.has(protocol.slug),
-    tvl_usd: protocol.tvl_usd,
-    change_7d: protocol.change_7d,
-    age_days: score.ageDays,
-    peer_multiple: score.peerMultiple,
-    growth_multiplier: score.growthMultiplier,
-    maturity_multiplier: score.maturityMultiplier,
-    breadth_multiplier: score.breadthMultiplier,
-  }));
-
-  const liveRows: LiveRow[] = snapshot.protocols
-    .filter(hasLiveToken)
-    .sort((a, b) => b.mcap_usd! - a.mcap_usd! || (a.slug < b.slug ? -1 : 1))
-    .slice(0, LIVE_ROW_TARGET)
-    .map((protocol, index) => {
-      const score = scoreProtocol(protocol, asOf, stats);
+  const live = snapshot.protocols
+    .filter((p) => p.mcap_usd !== null && p.mcap_usd > 0)
+    .sort((a, b) => (b.mcap_usd ?? 0) - (a.mcap_usd ?? 0) || a.slug.localeCompare(b.slug))
+    .slice(0, 24)
+    .map((p, i) => {
+      const stats = statsFor(categoryOf(p), built);
       return {
-        slug: protocol.slug,
-        name: protocol.name,
-        category: protocol.category,
-        chains: protocol.chains ?? [],
-        rank: index + 1,
-        tvl_usd: protocol.tvl_usd,
-        change_7d: protocol.change_7d,
-        age_days: score.ageDays,
-        market_cap_usd: protocol.mcap_usd!,
-        model_estimate_usd: score.implied,
-        model_ratio: score.implied / protocol.mcap_usd!,
-        peer_multiple: score.peerMultiple,
-        growth_multiplier: score.growthMultiplier,
-        maturity_multiplier: score.maturityMultiplier,
-        breadth_multiplier: score.breadthMultiplier,
+        rank: i + 1,
+        slug: p.slug,
+        name: p.name,
+        category: categoryOf(p),
+        chains: p.chains,
+        tvl_usd: p.tvl_usd,
+        mcap_usd: p.mcap_usd,
+        change_7d: p.change_7d,
+        age_days: ageDays(p, snapshot.as_of),
+        ratio: (p.mcap_usd ?? 0) / p.tvl_usd,
+        peer_n: stats.peer_n,
+        confidence: stats.confidence,
       };
     });
 
-  const boardCounts = new Map<string, number>();
-  for (const row of rows) {
-    const key = row.category ?? 'Uncategorised';
-    boardCounts.set(key, (boardCounts.get(key) ?? 0) + 1);
-  }
-  const categories = new Set<string>([...boardCounts.keys(), ...stats.byCategory.keys()]);
-  const categoryStats: CategoryStat[] = [...categories]
-    .map((category) => {
-      const peer = stats.byCategory.get(category);
-      return {
-        category,
-        live_peers: peer?.ratios.length ?? 0,
-        raw_median: peer?.rawMedian ?? null,
-        multiple: peer?.multiple ?? clamp(stats.globalMedian, MULTIPLE_MIN, MULTIPLE_MAX),
-        board_rows: boardCounts.get(category) ?? 0,
-      };
+  const peerCategories = new Set<string>([...built.byCategory.keys(), ...rows.map((r) => r.category)]);
+  const peers = [...peerCategories]
+    .map((c) => {
+      const s = statsFor(c, built);
+      return { category: c, peer_n: s.peer_n, median_ratio: s.median_ratio, multiple: s.multiple, confidence: s.confidence };
     })
-    .sort((a, b) => b.board_rows - a.board_rows || b.live_peers - a.live_peers || (a.category < b.category ? -1 : 1));
+    .sort((a, b) => b.multiple - a.multiple || b.peer_n - a.peer_n || a.category.localeCompare(b.category));
 
-  return {
+  const data = {
     meta: {
       as_of: snapshot.as_of,
-      source: snapshot.source ?? 'DefiLlama protocol index',
       floor_usd: snapshot.floor_usd,
       protocol_count: snapshot.protocols.length,
-      watchlist_count: watchlist.length,
-      board_count: rows.length,
-      early_count: rows.filter((r) => !r.watchlist).length,
-      live_count: liveRows.length,
-      peer_count: stats.peers.length,
-    },
-    model: {
-      shrinkage_k: TUNED.shrinkageK,
-      growth_weight: TUNED.growthWeight,
-      maturity_floor: TUNED.maturityFloor,
-      maturity_cap_days: MATURITY_CAP_DAYS,
-      multiple_min: MULTIPLE_MIN,
-      multiple_max: MULTIPLE_MAX,
-      peer_tvl_cap_usd: PEER_TVL_CAP_USD,
-      breadth_per_chain: BREADTH_PER_CHAIN,
-      breadth_cap: BREADTH_CAP,
-      global_median: stats.globalMedian,
+      watchlist_count: snapshot.watchlist.length,
+      board_rows: rows.length,
+      early_rows: rows.length - snapshot.watchlist.length,
+      live_rows: live.length,
+      peer_count: built.peers.length,
+      global_median: built.globalMedian,
+      global_q25: built.globalQ25,
+      global_q75: built.globalQ75,
+      constants: { shrinkage_k: SHRINKAGE_K, ratio_cap: RATIO_CAP, growth_weight: GROWTH_WEIGHT, maturity_floor: MATURITY_FLOOR },
+      loo: { baseline: looStats(snapshot.protocols, snapshot.as_of, false), robust: looStats(snapshot.protocols, snapshot.as_of, true) },
     },
     rows,
-    live_rows: liveRows,
-    category_stats: categoryStats,
-    backtest: buildBacktestSummary(stats.peers, asOf),
+    live,
+    peers,
+    categories: [...new Set(rows.map((r) => r.category))].sort((a, b) => a.localeCompare(b)),
   };
+  return { board: { rows }, data };
 }

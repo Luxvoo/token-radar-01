@@ -1,377 +1,190 @@
-const DATA = window.RADAR;
-const BOARD_ROWS = DATA.rows;
-const LIVE_ROWS = DATA.live_rows;
-
-const params = new URLSearchParams(window.location.search);
+const R = window.RADAR;
+const rows = R.rows;
+const liveRows = R.live;
+const params = new URLSearchParams(location.search);
 const state = {
-  query: '',
-  category: params.get('category') || '',
-  status: params.get('status') === 'live' ? 'live' : 'pre',
+  mode: params.get('mode') === 'live' ? 'live' : 'pre',
+  q: params.get('q') || '',
+  cat: params.get('category') || 'all',
   sortKey: 'rank',
   sortDir: 1,
-  selectedSlug: params.get('slug') || '',
+  selected: params.get('detail') || rows[0].slug,
 };
 
-const els = {
-  snapshotLine: document.querySelector('#snapshot-line'),
-  heroCount: document.querySelector('#hero-count'),
-  stats: document.querySelector('#stats'),
-  deciles: document.querySelector('#deciles'),
-  distributionTotal: document.querySelector('#distribution-total'),
-  search: document.querySelector('#search'),
-  category: document.querySelector('#category'),
-  statusPre: document.querySelector('#status-pre'),
-  statusLive: document.querySelector('#status-live'),
-  rowCount: document.querySelector('#row-count'),
-  boardTitle: document.querySelector('#board-title'),
-  boardSubtitle: document.querySelector('#board-subtitle'),
-  valueHeading: document.querySelector('#value-heading'),
-  rows: document.querySelector('#rows'),
-  empty: document.querySelector('#empty'),
-  detail: document.querySelector('#detail'),
-  detailContent: document.querySelector('#detail-content'),
-  detailClose: document.querySelector('#detail-close'),
-  scrim: document.querySelector('#scrim'),
-  modelKpis: document.querySelector('#model-kpis'),
-  modelFormula: document.querySelector('#model-formula'),
-  backtestNotes: document.querySelector('#backtest-notes'),
-  peerRows: document.querySelector('#peer-rows'),
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const money = (n) => '$' + Math.round(n).toLocaleString('en-US');
+const compact = (n) => {
+  const a = Math.abs(n);
+  if (a >= 1e9) return '$' + (n / 1e9).toFixed(2) + 'B';
+  if (a >= 1e6) return '$' + (n / 1e6).toFixed(1) + 'M';
+  if (a >= 1e3) return '$' + (n / 1e3).toFixed(1) + 'K';
+  return money(n);
 };
-
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;',
-  }[ch]));
-}
-
-function money(value) {
-  const n = Number(value) || 0;
-  if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(2)}B`;
-  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `$${Math.round(n / 1_000)}K`;
-  return `$${Math.round(n)}`;
-}
-
-function moneyFull(value) {
-  return `$${Math.round(Number(value) || 0).toLocaleString('en-US')}`;
-}
-
-function percent(value) {
-  if (value === null || value === undefined) return '—';
-  const sign = value > 0 ? '+' : '';
-  return `${sign}${Number(value).toFixed(2)}%`;
-}
-
-function ageLabel(days) {
-  return days < 365 ? `${days}d` : `${(days / 365).toFixed(1)}y`;
-}
-
-function categoryOf(row) {
-  return row.category ?? 'Uncategorised';
-}
-
-function chainLabel(row, full = false) {
-  const chains = row.chains ?? [];
-  if (chains.length === 0) return 'chain not recorded';
-  if (full) return chains.join(', ');
-  const shown = chains.slice(0, 2).join(', ');
-  return chains.length > 2 ? `${shown} +${chains.length - 2}` : shown;
-}
-
-function rowValue(row) {
-  return state.status === 'live' ? row.market_cap_usd : row.implied_value_usd;
-}
-
-function recompute(row) {
-  return Math.round(row.tvl_usd * row.peer_multiple * row.growth_multiplier * row.maturity_multiplier * row.breadth_multiplier);
-}
+const pct = (n) => n === null || n === undefined ? 'n/a' : `${n >= 0 ? '+' : ''}${Number(n).toFixed(1)}%`;
+const badge = (r) => `<span class="badge ${esc(r.confidence)}">${esc(r.confidence)} · n=${r.peer_n}</span>`;
 
 function renderStats() {
-  const meta = DATA.meta;
-  els.snapshotLine.textContent = `Snapshot ${meta.as_of} · DefiLlama protocol index · radar-2 calibrated · peer median ${DATA.model.global_median.toFixed(4)}`;
-  els.heroCount.textContent = meta.board_count;
-  const cards = [
-    ['Watchlist covered', `${meta.watchlist_count} / ${meta.watchlist_count}`],
-    ['Pre-token rows scored', meta.board_count],
-    ['Early rows below floor', meta.early_count],
-    ['Live-token set aside', meta.live_count],
-  ];
-  els.stats.innerHTML = cards.map(([label, value]) => `
-    <div class="stat"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></div>
-  `).join('');
+  $('snapshot').textContent = `Snapshot ${R.meta.as_of} · ${R.meta.protocol_count} protocols`;
+  $('stats').innerHTML = [
+    [`${R.meta.watchlist_count}/${R.meta.watchlist_count}`, 'watchlist covered'],
+    [R.meta.board_rows, 'board rows'],
+    [R.meta.early_rows, 'early below $50M floor'],
+    [R.meta.live_rows, 'live tokens set aside'],
+  ].map(([v, label]) => `<div class="stat"><b>${v}</b><span>${label}</span></div>`).join('');
 }
 
 function renderDeciles() {
-  const sorted = [...BOARD_ROWS].sort((a, b) => a.rank - b.rank);
+  const sorted = [...rows].sort((a, b) => a.rank - b.rank);
   const groups = [];
-  for (let i = 0; i < 10; i += 1) {
-    const start = i * 23;
-    const slice = sorted.slice(start, i === 9 ? sorted.length : start + 23);
-    if (slice.length === 0) continue;
-    groups.push({
-      label: `Ranks ${slice[0].rank}–${slice[slice.length - 1].rank}`,
-      total: slice.reduce((sum, row) => sum + row.implied_value_usd, 0),
-    });
+  for (let i = 0; i < 10; i++) {
+    const start = Math.floor((i * sorted.length) / 10);
+    const end = Math.floor(((i + 1) * sorted.length) / 10);
+    const slice = sorted.slice(start, end);
+    groups.push({ label: `${start + 1}-${end}`, total: slice.reduce((s, r) => s + r.implied_value_usd, 0) });
   }
-  const logs = groups.map((g) => Math.log10(Math.max(g.total, 1)));
+  const logs = groups.map((g) => Math.log10(g.total));
   const min = Math.min(...logs);
   const max = Math.max(...logs);
-  const total = groups.reduce((sum, g) => sum + g.total, 0);
-  els.distributionTotal.textContent = money(total);
-  els.deciles.innerHTML = groups.map((group, index) => {
-    const width = max === min ? 100 : 8 + ((logs[index] - min) / (max - min)) * 92;
-    return `
-      <div class="decile">
-        <span class="decile-label">${escapeHtml(group.label)}</span>
-        <span class="decile-track"><span class="decile-fill" style="width:${width.toFixed(1)}%"></span></span>
-        <span class="decile-value">${money(group.total)}</span>
-      </div>`;
+  $('deciles').innerHTML = groups.map((g, i) => {
+    const h = 12 + ((logs[i] - min) / Math.max(max - min, 0.001)) * 72;
+    return `<div class="decile"><strong>${compact(g.total)}</strong><div class="bar" style="height:${h}px"></div><small>Ranks ${g.label}</small></div>`;
   }).join('');
 }
 
 function currentRows() {
-  const source = state.status === 'live' ? LIVE_ROWS : BOARD_ROWS;
-  const query = state.query.trim().toLowerCase();
-  const filtered = source.filter((row) => {
-    if (state.category && categoryOf(row) !== state.category) return false;
-    if (!query) return true;
-    const haystack = `${row.name} ${categoryOf(row)} ${(row.chains ?? []).join(' ')}`.toLowerCase();
-    return haystack.includes(query);
+  const base = state.mode === 'live' ? liveRows : rows;
+  const q = state.q.trim().toLowerCase();
+  const filtered = base.filter((r) => {
+    const inCat = state.cat === 'all' || r.category === state.cat;
+    const inQ = !q || r.name.toLowerCase().includes(q) || r.slug.toLowerCase().includes(q);
+    return inCat && inQ;
   });
-  const sorted = [...filtered].sort((a, b) => {
-    let result = 0;
-    switch (state.sortKey) {
-      case 'name': result = a.name.localeCompare(b.name); break;
-      case 'tvl': result = a.tvl_usd - b.tvl_usd; break;
-      case 'change': result = (a.change_7d ?? -Infinity) - (b.change_7d ?? -Infinity); break;
-      case 'age': result = a.age_days - b.age_days; break;
-      case 'value': result = rowValue(a) - rowValue(b); break;
-      case 'token': result = state.status.localeCompare(state.status); break;
-      default: result = a.rank - b.rank;
+  const key = state.sortKey;
+  const val = (r) => key === 'chains' ? r.chains.length : key === 'name' || key === 'category' ? r[key].toLowerCase() : r[key];
+  return filtered.sort((a, b) => {
+    const av = val(a);
+    const bv = val(b);
+    const cmp = av < bv ? -1 : av > bv ? 1 : a.rank - b.rank;
+    return cmp * state.sortDir;
+  });
+}
+
+function header(key, label, num = false) {
+  const mark = state.sortKey === key ? (state.sortDir === 1 ? '▲' : '▼') : '↕';
+  return `<th class="${num ? 'num' : ''}"><button type="button" data-sort="${key}">${label}<span>${mark}</span></button></th>`;
+}
+
+function renderTable() {
+  const list = currentRows();
+  $('count').textContent = `${list.length} shown`;
+  const live = state.mode === 'live';
+  const head = live
+    ? `<tr>${header('rank', 'Rank', true)}${header('name', 'Protocol')}${header('category', 'Category')}${header('tvl_usd', 'TVL', true)}${header('mcap_usd', 'Market cap', true)}${header('change_7d', '7d', true)}${header('age_days', 'Age', true)}${header('chains', 'Chains', true)}${header('peer_n', 'Confidence')}</tr>`
+    : `<tr>${header('rank', 'Rank', true)}${header('name', 'Protocol')}${header('category', 'Category')}${header('tvl_usd', 'TVL', true)}${header('change_7d', '7d', true)}${header('age_days', 'Age', true)}${header('chains', 'Chains', true)}${header('implied_value_usd', 'Implied value', true)}${header('peer_n', 'Confidence')}</tr>`;
+  const body = list.map((r) => {
+    const selected = r.slug === state.selected ? ' class="selected"' : '';
+    const change = `<span class="${(r.change_7d ?? 0) < 0 ? 'neg' : 'pos'}">${pct(r.change_7d)}</span>`;
+    if (live) {
+      return `<tr data-slug="${esc(r.slug)}"${selected}><td class="num">${r.rank}</td><td class="proto"><b>${esc(r.name)}</b><small>${esc(r.slug)}</small></td><td>${esc(r.category)}</td><td class="num">${compact(r.tvl_usd)}</td><td class="num">${compact(r.mcap_usd)}</td><td class="num">${change}</td><td class="num">${r.age_days}d</td><td class="num">${r.chains.length}</td><td>${badge(r)}</td></tr>`;
     }
-    return result === 0 ? a.rank - b.rank : result * state.sortDir;
-  });
-  return sorted;
-}
-
-function renderSortMarks() {
-  document.querySelectorAll('th[data-sort]').forEach((th) => {
-    const mark = th.querySelector('.sort-mark');
-    const active = th.dataset.sort === state.sortKey;
-    th.setAttribute('aria-sort', active ? (state.sortDir === 1 ? 'ascending' : 'descending') : 'none');
-    mark.textContent = active ? (state.sortDir === 1 ? '▲' : '▼') : '↕';
-  });
-}
-
-function renderRows() {
-  const rows = currentRows();
-  const maxValue = Math.max(...rows.map(rowValue), 1);
-  els.rowCount.textContent = `${rows.length} rows shown`;
-  els.boardTitle.textContent = state.status === 'live' ? 'Live-token protocols set aside' : 'Pre-token board';
-  els.boardSubtitle.textContent = state.status === 'live'
-    ? 'Tokens that already trade, shown with the model estimate beside the recorded market cap.'
-    : 'Strongest implied value first. Select a row for its model and farm plan.';
-  els.valueHeading.firstChild.textContent = state.status === 'live' ? 'Market cap ' : 'Implied value ';
-  els.empty.hidden = rows.length > 0;
-  els.rows.innerHTML = rows.map((row) => {
-    const value = rowValue(row);
-    const width = Math.max(2, (value / maxValue) * 100);
-    const changeClass = row.change_7d === null ? '' : row.change_7d >= 0 ? 'positive' : 'negative';
-    const selected = row.slug === state.selectedSlug ? ' selected' : '';
-    const token = state.status === 'live'
-      ? '<span class="token-dot live"></span>live'
-      : '<span class="token-dot"></span>no token';
-    return `
-      <tr class="${selected}" tabindex="0" data-slug="${escapeHtml(row.slug)}">
-        <td class="rank">${row.rank}</td>
-        <td class="protocol"><strong>${escapeHtml(row.name)}</strong><span>${escapeHtml(categoryOf(row))} on ${escapeHtml(chainLabel(row))}</span></td>
-        <td class="number">${money(row.tvl_usd)}</td>
-        <td class="number ${changeClass}">${percent(row.change_7d)}</td>
-        <td class="number">${ageLabel(row.age_days)}</td>
-        <td class="value-cell"><span class="value-bar"><span class="value-fill" style="width:${width.toFixed(1)}%"></span></span><span class="value-amount">${money(value)}</span></td>
-        <td>${token}</td>
-      </tr>`;
+    return `<tr data-slug="${esc(r.slug)}"${selected}><td class="num">${r.rank}</td><td class="proto"><b>${esc(r.name)}</b><small>${esc(r.slug)}${r.watchlist ? ' · watchlist' : ' · early'}</small></td><td>${esc(r.category)}</td><td class="num">${compact(r.tvl_usd)}</td><td class="num">${change}</td><td class="num">${r.age_days}d</td><td class="num">${r.chains.length}</td><td class="num"><b>${compact(r.implied_value_usd)}</b><div class="range">${compact(r.value_low)}–${compact(r.value_high)}</div></td><td>${badge(r)}</td></tr>`;
   }).join('');
-  renderSortMarks();
+  $('board').innerHTML = `<thead>${head}</thead><tbody>${body}</tbody>`;
+  document.querySelectorAll('[data-sort]').forEach((b) => b.addEventListener('click', () => {
+    const key = b.getAttribute('data-sort');
+    if (state.sortKey === key) state.sortDir *= -1;
+    else { state.sortKey = key; state.sortDir = key === 'rank' || key === 'name' || key === 'category' ? 1 : -1; }
+    renderTable();
+  }));
+  document.querySelectorAll('tbody tr[data-slug]').forEach((tr) => tr.addEventListener('click', () => {
+    state.selected = tr.getAttribute('data-slug');
+    renderTable();
+    renderDetail();
+  }));
 }
 
-function breakdownRows(row, live) {
-  const estimate = recompute(row);
-  const lines = [
-    ['TVL', moneyFull(row.tvl_usd)],
-    [`Peer multiple (${categoryOf(row)})`, row.peer_multiple.toFixed(4)],
-    ['Seven-day growth', percent(row.change_7d)],
-    [live ? 'Age on record' : 'Age with no token', ageLabel(row.age_days)],
-    ['Growth multiplier', row.growth_multiplier.toFixed(4)],
-    ['Maturity multiplier', row.maturity_multiplier.toFixed(4)],
-    [`Breadth multiplier (${(row.chains ?? []).length} chains)`, row.breadth_multiplier.toFixed(2)],
-  ];
-  if (live) {
-    lines.push(['Recorded market cap', moneyFull(row.market_cap_usd)]);
-    lines.push(['Model estimate', moneyFull(estimate)]);
-    lines.push(['Estimate / market cap', `${row.model_ratio.toFixed(2)}x`]);
-  } else {
-    lines.push(['Implied value', moneyFull(row.implied_value_usd)]);
+function selectedRow() {
+  const base = state.mode === 'live' ? liveRows : rows;
+  return base.find((r) => r.slug === state.selected) || base[0];
+}
+
+function renderDetail() {
+  const r = selectedRow();
+  if (!r) return;
+  state.selected = r.slug;
+  if (state.mode === 'live') {
+    $('detail').innerHTML = `
+      <h2>${esc(r.name)}</h2><p class="slug">${esc(r.slug)} · live token set aside from the pre-token ranking</p>
+      <div>${badge(r)}</div>
+      <div class="grid">
+        <div class="kv"><span>Market cap</span><b>${money(r.mcap_usd)}</b></div>
+        <div class="kv"><span>TVL</span><b>${money(r.tvl_usd)}</b></div>
+        <div class="kv"><span>Market cap / TVL</span><b>${r.ratio.toFixed(3)}</b></div>
+        <div class="kv"><span>7-day TVL change</span><b>${pct(r.change_7d)}</b></div>
+        <div class="kv"><span>Age tracked</span><b>${r.age_days} days</b></div>
+        <div class="kv"><span>Chains</span><b>${r.chains.length}</b></div>
+      </div>
+      <p class="muted">${esc(r.chains.join(', '))}</p>`;
+    return;
   }
-  return lines.map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join('');
+  const recomputed = Math.round(r.tvl_usd * r.peer_multiple * r.growth_mult * r.maturity_mult * r.breadth_mult);
+  const logPos = (Math.log10(r.implied_value_usd) - Math.log10(r.value_low)) / Math.max(Math.log10(r.value_high) - Math.log10(r.value_low), 0.001) * 100;
+  const flags = r.risk_flags.length
+    ? `<div class="flags">${r.risk_flags.map((f) => `<span class="flag">${esc(f)}</span>`).join('')}</div>`
+    : '<p class="noflags">No major flags from the snapshot fields.</p>';
+  $('detail').innerHTML = `
+    <h2>#${r.rank} ${esc(r.name)}</h2><p class="slug">${esc(r.slug)} · ${esc(r.category)} · ${r.watchlist ? 'watchlist' : 'early below floor'}</p>
+    <div>${badge(r)}</div>
+    <div class="grid">
+      <div class="kv"><span>Implied value</span><b>${money(r.implied_value_usd)}</b></div>
+      <div class="kv"><span>TVL</span><b>${money(r.tvl_usd)}</b></div>
+      <div class="kv"><span>Peer multiple</span><b>${r.peer_multiple.toFixed(4)}</b></div>
+      <div class="kv"><span>Peer median ratio</span><b>${r.peer_median.toFixed(4)}</b></div>
+      <div class="kv"><span>Growth factor</span><b>${r.growth_mult.toFixed(3)}</b></div>
+      <div class="kv"><span>Maturity factor</span><b>${r.maturity_mult.toFixed(3)}</b></div>
+      <div class="kv"><span>Breadth factor</span><b>${r.breadth_mult.toFixed(3)}</b></div>
+      <div class="kv"><span>Age / chains</span><b>${r.age_days}d · ${r.chains.length}</b></div>
+    </div>
+    <div class="recompute">Recompute: ${compact(r.tvl_usd)} × ${r.peer_multiple.toFixed(4)} × ${r.growth_mult.toFixed(3)} × ${r.maturity_mult.toFixed(3)} × ${r.breadth_mult.toFixed(3)} = <b>${money(recomputed)}</b> ${recomputed === r.implied_value_usd ? '✓ matches board' : '≠ board'}</div>
+    <h3>Sensitivity range</h3>
+    <div class="rangebar"><i style="left:${Math.min(98, Math.max(1, logPos))}%"></i></div>
+    <p class="muted">${money(r.value_low)} low · ${money(r.implied_value_usd)} base · ${money(r.value_high)} high. The range uses winsorized peer-ratio quartiles, shrunk the same way as the multiple.</p>
+    <h3>Risk flags</h3>${flags}
+    <h3>Farm plan</h3>
+    <ol>${r.farm_steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ol>`;
 }
 
-function farmPlan(row) {
-  return `<ol class="farm">${row.farm_steps.map((step) => {
-    const at = step.indexOf(' Cost:');
-    const main = at >= 0 ? step.slice(0, at + 1) : step;
-    const cost = at >= 0 ? step.slice(at + 1) : '';
-    return `<li><p>${escapeHtml(main)}${cost ? `<span class="cost">${escapeHtml(cost)}</span>` : ''}</p></li>`;
-  }).join('')}</ol>`;
+function renderModel() {
+  const b = R.meta.loo.baseline;
+  const r = R.meta.loo.robust;
+  $('loo').innerHTML = [
+    ['Peer set', `${R.meta.peer_count} live peers`],
+    ['Global median ratio', R.meta.global_median.toFixed(4)],
+    ['LOO median |log err|', `${b.median_abs_log_err.toFixed(4)} → ${r.median_abs_log_err.toFixed(4)}`],
+    ['LOO median implied/actual', `${b.median_ratio.toFixed(4)} → ${r.median_ratio.toFixed(4)}`],
+  ].map(([k, v]) => `<div class="kv"><span>${k}</span><b>${v}</b></div>`).join('');
+  $('peers').innerHTML = `<thead><tr><th>Category</th><th class="num">Peer n</th><th class="num">Winsorized median</th><th class="num">Multiple used</th><th>Confidence</th></tr></thead><tbody>${R.peers.map((p) => `<tr><td>${esc(p.category)}</td><td class="num">${p.peer_n}</td><td class="num">${p.median_ratio.toFixed(4)}</td><td class="num">${p.multiple.toFixed(4)}</td><td><span class="badge ${esc(p.confidence)}">${esc(p.confidence)}</span></td></tr>`).join('')}</tbody>`;
 }
 
-function renderDetail(row) {
-  const live = state.status === 'live';
-  const estimate = recompute(row);
-  const recomputeLine = live
-    ? `The same function scores every protocol. It estimates ${moneyFull(estimate)} here, against a recorded market cap of ${moneyFull(row.market_cap_usd)}.`
-    : estimate === row.implied_value_usd
-      ? `Model radar-2 calibrated: this page recomputes this row as ${moneyFull(estimate)} — the same number board.json carries. This is an estimate, not a price.`
-      : `Model radar-2 calibrated: this page recomputes this row as ${moneyFull(estimate)}; board.json carries ${moneyFull(row.implied_value_usd)}. This is an estimate, not a price.`;
-  els.detailContent.innerHTML = `
-    <div class="detail-kicker">Rank ${row.rank} of ${live ? LIVE_ROWS.length : BOARD_ROWS.length}</div>
-    <h2>${escapeHtml(row.name)}</h2>
-    <p class="detail-subtitle">${escapeHtml(categoryOf(row))} on ${escapeHtml(chainLabel(row, true))}</p>
-    <h3>${live ? 'Recorded value' : 'Implied value'}</h3>
-    <div class="breakdown">${breakdownRows(row, live)}</div>
-    <p class="recompute">${escapeHtml(recomputeLine)}</p>
-    ${live
-      ? '<h3>Token status</h3><p class="recompute">This protocol already records a live token, so the radar sets it aside instead of ranking it as a launch candidate.</p>'
-      : `<h3>Farm plan</h3>${farmPlan(row)}`}
-  `;
+function initControls() {
+  $('search').value = state.q;
+  $('category').innerHTML = '<option value="all">All categories</option>' + R.categories.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
+  $('category').value = R.categories.includes(state.cat) ? state.cat : 'all';
+  state.cat = $('category').value;
+  $('mode-pre').classList.toggle('active', state.mode === 'pre');
+  $('mode-live').classList.toggle('active', state.mode === 'live');
+  $('search').addEventListener('input', (e) => { state.q = e.target.value; renderTable(); });
+  $('category').addEventListener('change', (e) => { state.cat = e.target.value; renderTable(); });
+  $('mode-pre').addEventListener('click', () => { state.mode = 'pre'; state.selected = rows[0].slug; initControls(); renderTable(); renderDetail(); });
+  $('mode-live').addEventListener('click', () => { state.mode = 'live'; state.selected = liveRows[0].slug; initControls(); renderTable(); renderDetail(); });
 }
 
-function openDetail(slug) {
-  const source = state.status === 'live' ? LIVE_ROWS : BOARD_ROWS;
-  const row = source.find((item) => item.slug === slug);
-  if (!row) return;
-  state.selectedSlug = slug;
-  renderDetail(row);
-  els.detail.hidden = false;
-  els.scrim.hidden = false;
-  renderRows();
-}
-
-function closeDetail() {
-  state.selectedSlug = '';
-  els.detail.hidden = true;
-  els.scrim.hidden = true;
-  renderRows();
-}
-
-function renderModelCheck() {
-  const model = DATA.model;
-  const check = DATA.backtest;
-  const typicalFactor = Math.exp(check.median_abs_log_error);
-  els.modelKpis.innerHTML = [
-    ['LOO peers', check.peer_count],
-    ['Median estimate / actual', `${check.median_ratio.toFixed(2)}x`],
-    ['Median log error', check.median_abs_log_error.toFixed(2)],
-    ['Typical factor', `${typicalFactor.toFixed(1)}x`],
-  ].map(([label, value]) => `<span class="kpi">${escapeHtml(label)} <strong>${escapeHtml(value)}</strong></span>`).join('');
-
-  els.modelFormula.innerHTML = `
-    <p><strong>Implied value = TVL × peer multiple × growth × maturity × breadth.</strong></p>
-    <p>Peer multiple: category median market-cap-to-TVL, shrunk toward the global median ${model.global_median.toFixed(4)} with k=${model.shrinkage_k}, clamped ${model.multiple_min.toFixed(2)}–${model.multiple_max.toFixed(2)}. Peers are live-token protocols with TVL at most ${money(model.peer_tvl_cap_usd)}.</p>
-    <p>Growth uses the seven-day TVL change at weight ${model.growth_weight}. Maturity rises from ${model.maturity_floor} to 1 over ${model.maturity_cap_days} days. Breadth adds ${model.breadth_per_chain} per extra chain, capped at ${model.breadth_cap} extra chains.</p>
-  `;
-
-  const bias = check.category_bias.map((item) => `${item.category} ${item.median_ratio.toFixed(2)}x`).join(' · ');
-  els.backtestNotes.innerHTML = `
-    <p>Calibration moved the leave-one-out median log error from <strong>${check.baseline_median_abs_log_error.toFixed(2)}</strong> to <strong>${check.median_abs_log_error.toFixed(2)}</strong>, with the median estimate at <strong>${check.median_ratio.toFixed(2)}x</strong> of recorded market cap.</p>
-    <p>Largest remaining category biases: ${escapeHtml(bias)}. Dead tokens and businesses whose market cap is disconnected from TVL dominate the error, so the check is a calibration guardrail, not a promise.</p>
-  `;
-
-  els.peerRows.innerHTML = DATA.category_stats.map((item) => `
-    <tr>
-      <td>${escapeHtml(item.category)}</td>
-      <td>${item.live_peers}</td>
-      <td>${item.raw_median === null ? '—' : item.raw_median.toFixed(3)}</td>
-      <td>${item.multiple.toFixed(3)}</td>
-      <td>${item.board_rows}</td>
-    </tr>
-  `).join('');
-}
-
-function renderCategories() {
-  const categories = [...new Set([...BOARD_ROWS, ...LIVE_ROWS].map(categoryOf))].sort((a, b) => a.localeCompare(b));
-  els.category.innerHTML = '<option value="">All categories</option>' + categories.map((category) => (
-    `<option value="${escapeHtml(category)}" ${category === state.category ? 'selected' : ''}>${escapeHtml(category)}</option>`
-  )).join('');
-}
-
-function setStatus(status) {
-  state.status = status;
-  state.selectedSlug = '';
-  els.statusPre.classList.toggle('active', status === 'pre');
-  els.statusLive.classList.toggle('active', status === 'live');
-  closeDetail();
-  renderRows();
-}
-
-function init() {
-  renderStats();
-  renderDeciles();
-  renderCategories();
-  els.search.value = state.query;
-  els.category.value = state.category;
-  els.statusPre.classList.toggle('active', state.status === 'pre');
-  els.statusLive.classList.toggle('active', state.status === 'live');
-  renderRows();
-  renderModelCheck();
-
-  els.search.addEventListener('input', () => {
-    state.query = els.search.value;
-    renderRows();
-  });
-  els.category.addEventListener('change', () => {
-    state.category = els.category.value;
-    renderRows();
-  });
-  els.statusPre.addEventListener('click', () => setStatus('pre'));
-  els.statusLive.addEventListener('click', () => setStatus('live'));
-  document.querySelectorAll('th[data-sort]').forEach((th) => {
-    th.querySelector('button').addEventListener('click', () => {
-      const key = th.dataset.sort;
-      if (state.sortKey === key) {
-        state.sortDir *= -1;
-      } else {
-        state.sortKey = key;
-        state.sortDir = key === 'rank' || key === 'name' || key === 'token' ? 1 : -1;
-      }
-      renderRows();
-    });
-  });
-  els.rows.addEventListener('click', (event) => {
-    const tr = event.target.closest('tr[data-slug]');
-    if (tr) openDetail(tr.dataset.slug);
-  });
-  els.rows.addEventListener('keydown', (event) => {
-    const tr = event.target.closest('tr[data-slug]');
-    if (tr && (event.key === 'Enter' || event.key === ' ')) {
-      event.preventDefault();
-      openDetail(tr.dataset.slug);
-    }
-  });
-  els.detailClose.addEventListener('click', closeDetail);
-  els.scrim.addEventListener('click', closeDetail);
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && !els.detail.hidden) closeDetail();
-  });
-
-  if (state.selectedSlug) openDetail(state.selectedSlug);
-  if (params.get('view') === 'model') {
-    document.body.classList.add('model-focus');
-  }
-}
-
-init();
+renderStats();
+renderDeciles();
+initControls();
+renderTable();
+renderDetail();
+renderModel();
+const shot = params.get('shot') || (params.get('view') === 'model' ? 'model' : '');
+if (shot) document.body.classList.add(`shot-${shot}`);
